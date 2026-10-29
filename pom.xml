@@ -5,12 +5,12 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>io.github.skippedaga</groupId>
-    <artifactId>tinytsdb</artifactId>
-    <version>0.1.0</version>
-    <packaging>jar</packaging>
+    <artifactId>tinytsdb-parent</artifactId>
+    <version>0.2.0</version>
+    <packaging>pom</packaging>
 
-    <name>tinytsdb</name>
-    <description>In-process PN counters with labels for Java 25: calendar, rolling and anchored windows, a storage SPI and a PromQL subset. No dependencies.</description>
+    <name>tinytsdb-parent</name>
+    <description>tinytsdb and its console.</description>
     <url>https://github.com/skippedaga/tinytsdb</url>
 
     <licenses>
@@ -25,12 +25,27 @@
         <connection>scm:git:https://github.com/skippedaga/tinytsdb.git</connection>
     </scm>
 
+    <modules>
+        <module>tinytsdb</module>
+        <module>tinytsdb-console</module>
+    </modules>
+
     <properties>
         <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <junit.version>5.12.2</junit.version>
         <assertj.version>3.27.6</assertj.version>
     </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>io.github.skippedaga</groupId>
+                <artifactId>tinytsdb</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
 
     <dependencies>
         <dependency>
@@ -48,22 +63,24 @@
     </dependencies>
 
     <build>
-        <plugins>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-compiler-plugin</artifactId>
-                <version>3.14.0</version>
-                <configuration>
-                    <compilerArgs>
-                        <arg>-Xlint:all</arg>
-                    </compilerArgs>
-                </configuration>
-            </plugin>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-surefire-plugin</artifactId>
-                <version>3.5.4</version>
-            </plugin>
-        </plugins>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-compiler-plugin</artifactId>
+                    <version>3.14.0</version>
+                    <configuration>
+                        <compilerArgs>
+                            <arg>-Xlint:all</arg>
+                        </compilerArgs>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <version>3.5.4</version>
+                </plugin>
+            </plugins>
+        </pluginManagement>
     </build>
 </project>
