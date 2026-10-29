@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Counters</title>
+  <link rel="stylesheet" href="assets/console.css">
+  <script src="assets/console.js" defer></script>
+</head>
+<body>
+<header class="bar">
+  <div class="bar-inner">
+    <h1 id="title">Counters</h1>
+    <form id="series" class="series" autocomplete="off">
+      <div id="series-fields" class="series-fields"></div>
+      <label class="field">
+        <span id="metric-label">Metric</span>
+        <select id="metric" name="metric"></select>
+      </label>
+      <button type="submit" id="apply">Show</button>
+    </form>
+    <div class="bar-tools">
+      <button type="button" id="refresh-toggle" aria-pressed="true">Auto-refresh on</button>
+      <button type="button" id="theme-toggle">Dark</button>
+    </div>
+  </div>
+  <p id="status" class="status" role="status" aria-live="polite"></p>
+</header>
+
+<main id="main">
+  <p id="empty" class="empty">Fill in the series and choose Show.</p>
+  <p id="error" class="error" role="alert" hidden></p>
+
+  <section id="explorer" class="panel" aria-labelledby="explorer-title" hidden>
+    <div class="panel-head">
+      <h2 id="explorer-title">Windows</h2>
+      <fieldset id="window-picker" class="chips"><legend class="sr-only">Windows to show</legend></fieldset>
+    </div>
+    <div id="tiles" class="tiles"></div>
+  </section>
+
+  <div class="columns">
+    <section id="overview" class="panel" aria-labelledby="overview-title" hidden>
+      <h2 id="overview-title">Calendar</h2>
+      <div id="anchored" class="ledger"></div>
+      <div id="calendar" class="ledger"></div>
+    </section>
+
+    <section id="rolling" class="panel" aria-labelledby="rolling-title" hidden>
+      <h2 id="rolling-title">Rolling windows</h2>
+      <div class="table-wrap">
+        <table id="rolling-table">
+          <thead><tr><th scope="col" id="rt-window">Window</th><th scope="col" class="num" id="rt-net">Net</th><th scope="col" class="num" id="rt-added">Added</th><th scope="col" class="num" id="rt-retracted">Retracted</th><th scope="col" id="rt-span">Counted</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <section id="history" class="panel" aria-labelledby="history-title" hidden>
+    <div class="panel-head">
+      <h2 id="history-title">History</h2>
+      <div class="chips" role="group" aria-label="History step">
+        <button type="button" class="chip" data-grain="d" aria-pressed="true" id="history-days">Days</button>
+        <button type="button" class="chip" data-grain="h" aria-pressed="false" id="history-hours">Hours</button>
+      </div>
+    </div>
+    <div id="chart" class="chart"></div>
+    <p id="history-legend" class="legend"><span class="key added"></span><span id="legend-added">Added</span><span class="key retracted"></span><span id="legend-retracted">Retracted</span></p>
+  </section>
+
+  <section id="cube" class="panel" aria-labelledby="cube-title" hidden>
+    <div class="panel-head">
+      <h2 id="cube-title">Cube</h2>
+      <div class="cube-axes">
+        <label class="field" id="cube-example-field" hidden><span id="cube-example-label">Examples</span><select id="cube-example"></select></label>
+        <label class="field compact"><span id="cube-by-label">Rows</span><select id="cube-by"></select></label>
+        <label class="field compact"><span id="cube-then-label">Then by</span><select id="cube-then"></select></label>
+      </div>
+    </div>
+    <p id="cube-note" class="note">The metric sliced by its labels.</p>
+    <p id="cube-explanation" class="explanation" hidden></p>
+    <form id="cube-filter" class="cube-filter" autocomplete="off">
+      <div id="cube-filter-fields" class="series-fields"></div>
+      <button type="submit" id="cube-apply">Filter</button>
+    </form>
+    <p id="cube-summary" class="cube-summary"></p>
+    <div class="table-wrap">
+      <table id="cube-table">
+        <thead></thead>
+        <tbody></tbody>
+        <tfoot></tfoot>
+      </table>
+    </div>
+    <p id="cube-warn" class="warn" hidden></p>
+    <p id="cube-promql" class="promql" hidden><span id="cube-promql-label"></span> <code id="cube-promql-code"></code></p>
+  </section>
+
+  <section id="corrections" class="panel" aria-labelledby="corrections-title" hidden>
+    <h2 id="corrections-title">Corrections</h2>
+    <p id="corrections-note" class="note">Each value is what was added minus what was taken back later: refunds, reversals, status changes.</p>
+    <div id="corrections-list" class="ledger"></div>
+  </section>
+
+  <details id="api-log" class="panel api-log">
+    <summary id="api-title">API: requests and responses</summary>
+    <p id="api-note" class="note">Every call this page makes, newest first. Your own code can make the same GET requests.</p>
+    <p id="api-held" class="note" role="status" hidden></p>
+    <ol id="api-entries"></ol>
+  </details>
+</main>
+
+<footer class="foot">
+  <p id="store-line"></p>
+</footer>
+</body>
+</html>

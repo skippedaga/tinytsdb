@@ -5,12 +5,12 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>io.github.skippedaga</groupId>
-    <artifactId>tinytsdb-parent</artifactId>
-    <version>0.2.1</version>
-    <packaging>pom</packaging>
+    <artifactId>tinytsdb</artifactId>
+    <version>0.3.0</version>
+    <packaging>jar</packaging>
 
-    <name>tinytsdb-parent</name>
-    <description>tinytsdb and its console.</description>
+    <name>tinytsdb</name>
+    <description>In-process PN counters with labels for Java 25: calendar, rolling and anchored windows, a storage SPI, a PromQL subset and a read-only web console. No dependencies.</description>
     <url>https://github.com/skippedaga/tinytsdb</url>
 
     <licenses>
@@ -40,27 +40,12 @@
         <url>https://github.com/skippedaga/tinytsdb/issues</url>
     </issueManagement>
 
-    <modules>
-        <module>tinytsdb</module>
-        <module>tinytsdb-console</module>
-    </modules>
-
     <properties>
         <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <junit.version>5.12.2</junit.version>
         <assertj.version>3.27.6</assertj.version>
     </properties>
-
-    <dependencyManagement>
-        <dependencies>
-            <dependency>
-                <groupId>io.github.skippedaga</groupId>
-                <artifactId>tinytsdb</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-        </dependencies>
-    </dependencyManagement>
 
     <dependencies>
         <dependency>

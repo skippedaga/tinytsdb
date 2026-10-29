@@ -1,34 +1,93 @@
 # tinytsdb
 
 In-process counters with labels, kept per time bucket and read over calendar, rolling, anchored or arbitrary
-windows, with a subset of PromQL on top and an optional web console. Java 25, no dependencies.
+windows. On top: a subset of PromQL, and a read-only web console that slices the counters like a cube. One jar,
+Java 25, no dependencies.
 
-It is meant for counts that a request has to know *now*, for example "how many of this user's deposits are pending
+It is meant for counts that a request has to know *now*, for example "how many of this user's payments are pending
 in the last 10 minutes" or "how much this card spent this month". The goal is to answer those without a round trip to
 a database or to Prometheus, or, with a remote store, in one round trip.
 
-| Artifact | What |
-|---|---|
-| `io.github.skippedaga:tinytsdb` | the counters, windows, PromQL subset, storage SPI and in-memory store |
-| `io.github.skippedaga:tinytsdb-console` | a read-only web console: a JSON API plus three static files, on the JDK's HttpServer or mounted in any framework |
+![The console on made-up card payments: live windows, the cube with its examples, the API box, dark mode](docs/console.gif)
+
+## Install
+
+One artifact, `io.github.skippedaga:tinytsdb`, holds the library and the console. Each
+[GitHub release](https://github.com/skippedaga/tinytsdb/releases) has the jar, its sources and javadoc jars, the pom
+and `SHA256SUMS`. Publishing to Maven Central is set up (see [Build](#build)); once it is there:
+
+```xml
+<dependency>
+    <groupId>io.github.skippedaga</groupId>
+    <artifactId>tinytsdb</artifactId>
+    <version>0.3.0</version>
+</dependency>
+```
+
+## Examples
+
+Every example below is in [`ReadmeExamplesTest`](src/test/java/io/github/skippedaga/tinytsdb/ReadmeExamplesTest.java),
+so it compiles and gives these numbers.
+
+**Set up.** Tiers are the bucket sizes you keep, and for how long.
 
 ```java
 TinyTsdb db = TinyTsdb.builder()
-        .zone(ZoneId.of("Europe/Kyiv"))
+        .zone(ZoneId.of("Europe/Kyiv"))              // days, weeks and months start at local midnight
         .tier(Grain.MINUTE, Duration.ofHours(48))
         .tier(Grain.HOUR, Duration.ofDays(62))
         .tier(Grain.DAY, Duration.ofDays(3 * 365))
         .build();
+```
 
-db.add("tx_total", Labels.of("user", "42", "status", "PENDING"), occurredAtMs, 1);
-db.add("amount_total", Labels.of("card", "c1"), occurredAtMs, 12_50);   // minor units
-db.add("amount_total", Labels.of("card", "c1"), occurredAtMs, -4_00);   // a partial refund
+**A refund is a retraction, not a smaller number.** Amounts are integers in minor units.
 
-db.read("amount_total", Labels.of("card", "c1"), Window.calendar("mo:2026-10")).net();      // 850
-db.read("tx_total", Labels.of("user", "42", "status", "PENDING"),
-        Window.rolling(Duration.ofMinutes(10), Grain.MINUTE)).net();
+```java
+Labels card = Labels.of("card", "c1", "currency", "EUR");
+db.add("amount_total", card, paidAtMs, 12_50);       // a payment
+db.add("amount_total", card, paidAtMs, -4_00);       // a partial refund, at the payment's time
 
-db.query("sum by (status) (increase(tx_total{user=\"42\"}[10m]))").vector();
+Reading month = db.read("amount_total", card, Window.calendar("mo:2026-10"));
+month.net();         // 850
+month.added();       // 1250
+month.retracted();   // 400
+```
+
+**A status change is two writes,** both at the payment's own time, so every window stays right.
+
+```java
+db.write(List.of(
+        Increment.of("tx_total", user.with("status", "PENDING"), paidAtMs, -1),
+        Increment.of("tx_total", user.with("status", "DECLINED"), paidAtMs, 1)));
+
+Window last10m = Window.rolling(Duration.ofMinutes(10), Grain.MINUTE);
+db.read("tx_total", user.with("status", "PENDING"), last10m).net();    // 0, with retracted 1
+db.read("tx_total", user.with("status", "DECLINED"), last10m).net();   // 1
+```
+
+**A cube in code:** one call groups by a label over several windows.
+
+```java
+List<Window> windows = List.of(Window.rolling(Duration.ofHours(1), Grain.MINUTE),
+        Window.rolling(Duration.ofDays(1), Grain.MINUTE));
+Map<Window, Map<Labels, Reading>> cube =
+        db.readGrouped("payments_total", List.of(), List.of("merchant"), windows, nowMs);
+
+cube.get(windows.get(0)).get(Labels.of("merchant", "m-books")).net();   // 2: a row per merchant, a column per window
+```
+
+**The same column in PromQL:**
+
+```java
+db.query("sum by (merchant) (increase(payments_total[1d]))").vector();
+```
+
+**Consuming a log at most once.** `applyAt` keeps the offset per series, so a redelivered or replayed record changes
+nothing, even after a write that failed halfway.
+
+```java
+db.applyAt("payments-3", 1_207, increments).applied();   // 1
+db.applyAt("payments-3", 1_207, increments).applied();   // 0
 ```
 
 ## Concepts
@@ -163,65 +222,175 @@ How it differs from Prometheus:
 - Not supported: `rate`, other functions, `offset`, `@`, subqueries, `group_left` / `group_right`, `topk` and other
   parameterised aggregations, histograms.
 
-## Console (`tinytsdb-console`)
+## Console
 
-A read-only page for looking at counters:
-- the windows of a series, with the added / retracted split;
+A read-only page in the same jar, for the people who run the counters:
+- the windows of one series, with the added / retracted split;
 - the current calendar buckets and anchored windows;
 - a rolling-window table that says where each value came from;
-- a day or hour history (added above the axis, retracted below);
-- top values by label;
-- a status strip with latencies (P², from `ConsoleMetrics`).
+- a day or hour history, added above the axis and retracted below;
+- the **cube**: the metric sliced by its labels, with ready-made examples;
+- every API request the page makes, with its response;
+- a status strip with read and write latencies (P², from `ConsoleMetrics`).
 
-It has light and dark themes, works at phone width and from the keyboard, and keeps its state in the URL hash.
+It has light and dark themes, works at phone width and from the keyboard, and keeps its state in the URL, so a view
+can be shared as a link.
+
+![Windows, calendar and rolling windows for one card](docs/console-overview.png)
+
+### The cube
+
+Every counter is a cube: a metric, its labels, and time. The cube panel shows it as a table. Each label value gets a
+row (one or two labels deep), each window picked above gets a column, and each cell adds up every series in it,
+added and retracted shown apart. Filter on any label; an empty field matches anything. Under the table is the same
+question in PromQL, when one gives exactly the same numbers.
+
+![The cube: spend by merchant in EUR over five windows, with refunds and the PromQL equivalent](docs/console-cube.png)
+
+Amounts are never added across currencies. When the cells would mix them, the page says so, and grouped by currency,
+the total stays empty.
+
+**Examples** are slices the product thinks worth knowing, each with a sentence on what to look for. Picking one sets
+the metric, rows and filter; changing any of them by hand drops the explanation, since it no longer describes the
+table.
+
+### API box
+
+At the bottom, a closed box lists every call the page makes, newest first: the full URL, status, time, and the
+response when opened. While a response is open, newer calls wait, so it does not move while you read it.
+
+![The API box with a response opened](docs/console-api.png)
+
+| Dark | Phone |
+|---|---|
+| ![Dark theme](docs/console-dark.png) | ![Phone width](docs/console-phone.png) |
+
+### Turning it on
+
+The console is **off by default**. Wiring it in exposes nothing until `enabled(true)`. While it is off, `serve`
+opens no port, and the handler and `ConsoleApi.handle` answer 404 to everything. So it can be wired unconditionally
+and switched from your configuration:
 
 ```java
 ConsoleMetrics metrics = new ConsoleMetrics();                 // register as the TinyTsdb listener
 TinyTsdb db = TinyTsdb.builder().listener(metrics).build();
 ConsoleConfig config = ConsoleConfig.builder()
+        .enabled(settings.consoleEnabled())                    // off unless your setting says so
         .title("Card counters")
         .metric(ConsoleConfig.Metric.count("n_total", "Payments"))
         .metric(ConsoleConfig.Metric.amount("amount_total", "Amount", "currency"))
-        .seriesLabel("card").seriesLabel("currency")
-        .browseLabel("merchant")
+        .seriesLabel("card").seriesLabel("currency")           // the labels that pick one series
+        .browseLabel("merchant")                               // more labels the cube can slice by
         .anchored("first7d", "First 7 days of the card", "n_ok_total", Duration.ofDays(7))
+        .example("Spend by merchant, EUR",
+                "What EUR cards paid at each merchant, net of refunds.",
+                "amount_total", List.of("merchant"), Map.of("currency", "EUR"))
         .text("label_card", "Card")                            // every word on the page can be replaced
         .build();
 ConsoleApi api = new ConsoleApi(db, config, metrics);
 
-// standalone, on the JDK's HttpServer
-ConsoleHttpHandler.serve(api, new InetSocketAddress(8090), "/tinytsdb", exchange -> isAllowed(exchange));
+// standalone, on the JDK's HttpServer; empty when the console is off
+Optional<HttpServer> server = ConsoleHttpHandler.serve(api, new InetSocketAddress(8090), "/tinytsdb",
+        exchange -> isAllowed(exchange));
 
-// or from your framework's controller: api.handle("GET", "query", params) returns status, content type and JSON
+// or from your framework's controller: api.handle("GET", "cube", params) returns status, content type and JSON,
+// and the three static files are on the classpath under /tinytsdb/console/
 ```
 
-The JSON API is GET-only:
+Try it with the demo in the tests, made-up card payments with a payment every 400 ms:
+
+```bash
+mvn -q test-compile
+java -cp target/classes:target/test-classes io.github.skippedaga.tinytsdb.console.ConsoleDemo 8090
+# http://127.0.0.1:8090/tinytsdb/#card=c-1042&currency=EUR
+```
+
+### The JSON API
+
+GET only. A series is picked by the configured series labels, and the page sums every series that has them.
 
 | Endpoint | Answers |
 |---|---|
-| `describe` | what the page shows |
+| `describe` | what the page shows: metrics, labels, windows, tiers, examples, wording |
 | `query?metric=&window=&<labels>` | every metric over every window |
 | `overview` | anchored windows, current calendar buckets, all time |
 | `rolling` | every rolling preset, with where its value came from |
 | `history?grain=d\|h&count=` | the last buckets of a grain |
-| `labels?label=&top=` | top values of a label; needs an `IndexedStore` |
+| `cube?metric=&by=a[,b]&window=&<filters>&top=` | grouped by one or two labels, a column per window; needs an `IndexedStore` |
+| `labels?label=&top=` | top values of one label, today and all time; needs an `IndexedStore` |
 | `promql?query=` | in Prometheus' `/api/v1/query` shape |
 | `status` | as of, store capabilities, latencies |
 
-A series is picked by the configured series labels, and the page sums every series that has them. Values are shown as
-stored, already transformed, so raw identifiers never reach it.
+A cube request and its answer, from the demo, cut to two rows:
+
+```
+GET /tinytsdb/api/cube?metric=amount_total&by=merchant&window=1h,24h&currency=EUR&top=2
+```
+
+```json
+{
+  "asOf": "2026-10-29T20:34:48.187Z",
+  "metric": "amount_total",
+  "by": ["merchant"],
+  "filter": {"currency": "EUR"},
+  "dimensions": ["card", "currency", "merchant"],
+  "currencies": ["EUR"],
+  "columns": [
+    {"window": "1h", "title": "1 hour", "promql": "sum by (merchant) (increase(amount_total{currency=\"EUR\"}[1h]))"},
+    {"window": "24h", "title": "24 hours", "promql": "sum by (merchant) (increase(amount_total{currency=\"EUR\"}[1d]))"}
+  ],
+  "groups": 5,
+  "rows": [
+    {
+      "labels": {"merchant": "m-books"},
+      "cells": [
+        {"net": 863495, "added": 878166, "retracted": 14671},
+        {"net": 2038286, "added": 2075967, "retracted": 37681}
+      ]
+    },
+    {
+      "labels": {"merchant": "m-travel"},
+      "cells": [
+        {"net": 1041623, "added": 1073783, "retracted": 32160},
+        {"net": 2033262, "added": 2093707, "retracted": 60445}
+      ]
+    }
+  ],
+  "total": [
+    {"net": 4891510, "added": 5077126, "retracted": 185616},
+    {"net": 9781453, "added": 10120418, "retracted": 338965}
+  ]
+}
+```
+
+One series over two windows:
+
+```
+GET /tinytsdb/api/query?metric=n_total&window=15m,30d&card=c-1042&currency=EUR
+```
+
+```json
+{
+  "asOf": "2026-10-29T20:34:48.200Z",
+  "series": {"card": "c-1042", "currency": "EUR"},
+  "items": [
+    {"net": 210, "added": 210, "retracted": 0, "from": "2026-10-29T20:20:00Z", "to": "2026-10-29T20:35:00Z", "exact": true, "source": "BUCKETS", "metric": "n_total", "window": "15m", "title": "15 minutes"},
+    {"net": 261, "added": 261, "retracted": 0, "from": "2026-09-29T21:00:00Z", "to": "2026-10-29T21:00:00Z", "exact": true, "source": "BUCKETS", "metric": "n_total", "window": "30d", "title": "30 days"}
+  ]
+}
+```
+
+Values are shown as stored, already transformed, so raw identifiers never reach the page.
 
 Security:
 - Every answer carries a strict Content-Security-Policy: scripts, styles and requests only from the same origin, no
   framing.
-- The page has no inline scripts or styles, no CDN and no web fonts.
+- The page has no inline scripts or styles, no CDN and no web fonts, and builds every node with `textContent`.
 - Put it behind your own authentication; `allow` decides each request.
-
-`ConsoleDemo` in the console's tests starts it on made-up card payments.
 
 ## Size and speed
 
-Measured with the opt-in `LoadTest` (`mvn test -pl tinytsdb -Dtest=LoadTest -Dtinytsdb.load=true`) on a laptop, Java
+Measured with the opt-in `LoadTest` (`mvn test -Dtest=LoadTest -Dtinytsdb.load=true`) on a laptop, Java
 25, memory store. The setup was 100,000 users × 4 series, 600,000 increments a day for 31 days, a minute tier for 48
 hours and an hour tier for 31 days.
 
