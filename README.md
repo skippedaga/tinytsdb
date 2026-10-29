@@ -1,7 +1,7 @@
 # tinytsdb
 
 In-process counters with labels, kept per time bucket and read over calendar, rolling, anchored or arbitrary
-windows, with a subset of PromQL on top. Java 17, no dependencies.
+windows, with a subset of PromQL on top. Java 25, no dependencies.
 
 It is meant for counts that a request has to know *now*, for example "how many of this user's deposits are pending
 in the last 10 minutes" or "how much this card spent this month". The goal is to answer those without a round trip to
@@ -134,7 +134,7 @@ How it differs from Prometheus:
 
 ## Size and speed
 
-Measured with the opt-in `LoadTest` (`mvn test -Dtest=LoadTest -Dtinytsdb.load=true`) on a laptop, Java 21, memory
+Measured with the opt-in `LoadTest` (`mvn test -Dtest=LoadTest -Dtinytsdb.load=true`) on a laptop, Java 25, memory
 store. The setup was 100,000 users × 4 series, 600,000 increments a day for 31 days, a minute tier for 48 hours and an
 hour tier for 31 days.
 
