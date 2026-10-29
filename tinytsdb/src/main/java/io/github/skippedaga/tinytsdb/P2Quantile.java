@@ -33,10 +33,24 @@ public final class P2Quantile {
         return count;
     }
 
+    /** @throws IllegalArgumentException on NaN or an infinity, which would break the marker arithmetic */
     public void add(double x) {
-        if (Double.isNaN(x)) {
-            throw new IllegalArgumentException("NaN sample");
+        if (!Double.isFinite(x)) {
+            throw new IllegalArgumentException("Sample must be finite, got " + x);
         }
+        accept(x);
+    }
+
+    /** Like {@link #add}, but drops NaN and infinities. @return whether the sample was counted */
+    public boolean offer(double x) {
+        if (!Double.isFinite(x)) {
+            return false;
+        }
+        accept(x);
+        return true;
+    }
+
+    private void accept(double x) {
         if (count < 5) {
             height[(int) count] = x;
             count++;
@@ -80,16 +94,23 @@ public final class P2Quantile {
         }
     }
 
-    /** The estimate; NaN before the first sample. */
+    /**
+     * The estimate; NaN before the first sample. Up to five samples it is the exact sample quantile, interpolated
+     * between ranks (Hyndman &amp; Fan type 7): the median of 10, 20, 30, 40 is 25.
+     */
     public double value() {
         if (count == 0) {
             return Double.NaN;
         }
-        if (count < 5) {
+        if (count <= 5) {
             double[] sorted = Arrays.copyOf(height, (int) count);
             Arrays.sort(sorted);
-            int index = (int) Math.round(p * (count - 1));
-            return sorted[index];
+            double rank = p * (count - 1);
+            int below = (int) Math.floor(rank);
+            if (below + 1 >= count) {
+                return sorted[below];
+            }
+            return sorted[below] + (rank - below) * (sorted[below + 1] - sorted[below]);
         }
         return height[2];
     }

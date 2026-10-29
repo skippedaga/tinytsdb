@@ -7,7 +7,7 @@
     <parent>
         <groupId>io.github.skippedaga</groupId>
         <artifactId>tinytsdb-parent</artifactId>
-        <version>0.2.0</version>
+        <version>0.2.1</version>
     </parent>
 
     <artifactId>tinytsdb-console</artifactId>

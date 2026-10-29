@@ -133,6 +133,7 @@ so raw identifiers never reach the store. Reads and `=` / `!=` matchers go throu
 | `prefix:N` | the first N characters |
 | `bucket:N` | a number floored to a multiple of N; a value that is not a number drops the label |
 | `hmac` | HMAC-SHA256 with your key, base64url without padding, with your prefix |
+| `hmac:keep` | as `hmac`, but a value that is already your prefix plus 43 base64url characters passes through, for inputs that may arrive hashed |
 
 **Cardinality.** `CardinalityRule.cap("card", 100_000)` writes new values beyond the cap as `__overflow__`, so counts
 are kept but not attributed. `CardinalityRule.idle("card", Duration.ofDays(30))` removes series idle for 30 days whole,
@@ -140,7 +141,8 @@ totals included.
 
 **Also included:**
 - `P2Quantile`: the P² streaming quantile estimate (Jain & Chlamtac), five markers and O(1) per sample, within 2% of the
-  true rank on 10,000 samples in the tests.
+  true rank on 10,000 samples in the tests. Up to five samples it is exact, interpolated between ranks (Hyndman & Fan
+  type 7). `add` rejects NaN and infinities; `offer` drops them and says so. Not thread-safe.
 - `TsdbListener`: hooks for write and read timings, duplicates, rolling-snapshot outcomes and overflows. Label values
   never reach a hook.
 
@@ -238,6 +240,9 @@ roughly one bucket per tier, so keep the tiers and retentions to what you read.
 ```bash
 mvn verify
 ```
+
+A release to Maven Central (sources and javadoc jars, GPG signatures, uploaded to the Central Portal for publishing
+there) is `mvn -P release deploy`; the profile in `pom.xml` lists what it needs.
 
 ## License
 

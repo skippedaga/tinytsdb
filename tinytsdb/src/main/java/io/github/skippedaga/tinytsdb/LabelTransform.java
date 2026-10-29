@@ -56,8 +56,21 @@ public interface LabelTransform {
      * The prefix marks a hashed value so it is never taken for a raw one.
      */
     static LabelTransform hmac(byte[] key, String prefix) {
+        return hmac(key, prefix, false);
+    }
+
+    /**
+     * Like {@link #hmac(byte[], String)}; with {@code keepHashed}, a value that already has the shape of one of its
+     * outputs ({@code prefix} + 43 base64url characters) passes through unchanged, so hashing is idempotent. Use it when
+     * values may arrive already hashed. Anyone who knows a hashed value can then address that series by it; that is the
+     * point, and why it is off by default.
+     */
+    static LabelTransform hmac(byte[] key, String prefix, boolean keepHashed) {
         if (key == null || key.length == 0) {
             throw new IllegalArgumentException("HMAC key must not be empty");
+        }
+        if (keepHashed && (prefix == null || prefix.isEmpty())) {
+            throw new IllegalArgumentException("keepHashed needs a prefix to recognise hashed values");
         }
         SecretKeySpec spec = new SecretKeySpec(key.clone(), "HmacSHA256");
         try {
@@ -67,6 +80,9 @@ public interface LabelTransform {
         }
         Base64.Encoder base64 = Base64.getUrlEncoder().withoutPadding();
         return v -> {
+            if (keepHashed && isHashed(v, prefix)) {
+                return v;
+            }
             try {
                 Mac mac = Mac.getInstance("HmacSHA256");
                 mac.init(spec);
@@ -77,9 +93,23 @@ public interface LabelTransform {
         };
     }
 
+    /** Whether {@code v} is {@code prefix} followed by exactly 43 base64url characters, an HMAC-SHA256 output. */
+    private static boolean isHashed(String v, String prefix) {
+        if (v.length() != prefix.length() + 43 || !v.startsWith(prefix)) {
+            return false;
+        }
+        for (int i = prefix.length(); i < v.length(); i++) {
+            char c = v.charAt(i);
+            if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_')) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /**
-     * {@code none}, {@code upper}, {@code prefix:N}, {@code bucket:N} or {@code hmac} (which needs {@code hmacKey};
-     * values get the prefix {@code hmacPrefix}).
+     * {@code none}, {@code upper}, {@code prefix:N}, {@code bucket:N}, {@code hmac} or {@code hmac:keep} (both need
+     * {@code hmacKey}; values get the prefix {@code hmacPrefix}; {@code hmac:keep} passes already hashed values through).
      *
      * @throws IllegalArgumentException on an unknown spec
      */
@@ -93,6 +123,9 @@ public interface LabelTransform {
         }
         if (s.equals("hmac")) {
             return hmac(hmacKey, hmacPrefix);
+        }
+        if (s.equals("hmac:keep")) {
+            return hmac(hmacKey, hmacPrefix, true);
         }
         int colon = s.indexOf(':');
         if (colon > 0) {
@@ -110,6 +143,6 @@ public interface LabelTransform {
                 return bucket(n);
             }
         }
-        throw new IllegalArgumentException("Unknown transform " + spec + "; none, upper, hmac, prefix:N, bucket:N");
+        throw new IllegalArgumentException("Unknown transform " + spec + "; none, upper, hmac, hmac:keep, prefix:N, bucket:N");
     }
 }

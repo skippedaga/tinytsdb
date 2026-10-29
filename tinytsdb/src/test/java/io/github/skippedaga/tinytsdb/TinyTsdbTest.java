@@ -262,6 +262,28 @@ class TinyTsdbTest {
     }
 
     @Test
+    void hmacWithKeepHashedIsIdempotent() {
+        byte[] key = "k3y".getBytes(StandardCharsets.UTF_8);
+        LabelTransform plain = LabelTransform.hmac(key, "tx_");
+        LabelTransform keep = LabelTransform.parse("hmac:keep", key, "tx_");
+        String once = plain.apply("card-ab12cd");
+
+        assertThat(keep.apply("card-ab12cd")).isEqualTo(once);
+        assertThat(keep.apply(once)).isEqualTo(once);
+        assertThat(plain.apply(once)).isNotEqualTo(once);
+        // the prefix alone, a wrong length or a character outside base64url is still hashed
+        assertThat(keep.apply("tx_short")).isNotEqualTo("tx_short").hasSize(3 + 43);
+        assertThat(keep.apply(once.substring(0, once.length() - 1) + "=")).isNotEqualTo(once);
+        assertThat(keep.apply("ab_" + once.substring(3))).startsWith("tx_");
+
+        TinyTsdb db = builder().transform("card", keep).build();
+        db.add("tx_total", Labels.of("card", "card-ab12cd"), T, 1);
+        db.add("tx_total", Labels.of("card", once), T, 1);
+        assertThat(db.read("tx_total", Labels.of("card", "card-ab12cd"), Window.allTime()).net()).isEqualTo(2);
+        assertThatThrownBy(() -> LabelTransform.hmac(key, "", true)).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     void aCardinalityCapSendsNewValuesToTheOverflowSeries() {
         List<String> overflows = new ArrayList<>();
         TinyTsdb capped = builder()

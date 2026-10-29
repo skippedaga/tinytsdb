@@ -10,6 +10,7 @@ import java.util.function.DoubleSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.offset;
 
 class P2QuantileTest {
 
@@ -72,6 +73,36 @@ class P2QuantileTest {
     }
 
     @Test
+    void fewSamplesInterpolateBetweenRanks() {
+        P2Quantile median = new P2Quantile(0.5);
+        for (double x : new double[]{40, 10, 30, 20}) {
+            median.add(x);
+        }
+        assertThat(median.value()).isEqualTo(25);
+
+        P2Quantile p90 = new P2Quantile(0.9);
+        p90.add(7);
+        assertThat(p90.value()).isEqualTo(7);
+        for (double x : new double[]{1, 2, 3, 4}) {
+            p90.add(x);
+        }
+        // 1, 2, 3, 4, 7: rank 0.9 * 4 = 3.6, between 4 and 7
+        assertThat(p90.value()).isCloseTo(5.8, offset(1e-9));
+    }
+
+    @Test
+    void offerDropsWhatAddRejects() {
+        P2Quantile q = new P2Quantile(0.5);
+        assertThat(q.offer(Double.NaN)).isFalse();
+        assertThat(q.offer(Double.POSITIVE_INFINITY)).isFalse();
+        assertThat(q.offer(Double.NEGATIVE_INFINITY)).isFalse();
+        assertThat(q.count()).isZero();
+        assertThat(q.offer(2)).isTrue();
+        assertThat(q.count()).isEqualTo(1);
+        assertThat(q.value()).isEqualTo(2);
+    }
+
+    @Test
     void aConstantStreamIsThatConstant() {
         P2Quantile q = new P2Quantile(0.99);
         for (int i = 0; i < 1_000; i++) {
@@ -85,5 +116,7 @@ class P2QuantileTest {
         assertThatThrownBy(() -> new P2Quantile(0)).isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new P2Quantile(1)).isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new P2Quantile(0.5).add(Double.NaN)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new P2Quantile(0.5).add(Double.POSITIVE_INFINITY))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 }
