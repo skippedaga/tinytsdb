@@ -20,7 +20,7 @@ and `SHA256SUMS`. Publishing to Maven Central is set up (see [Build](#build)); o
 <dependency>
     <groupId>io.github.skippedaga</groupId>
     <artifactId>tinytsdb</artifactId>
-    <version>0.3.0</version>
+    <version>0.4.0</version>
 </dependency>
 ```
 
@@ -204,6 +204,41 @@ totals included.
   type 7). `add` rejects NaN and infinities; `offer` drops them and says so. Not thread-safe.
 - `TsdbListener`: hooks for write and read timings, duplicates, rolling-snapshot outcomes and overflows. Label values
   never reach a hook.
+
+## Groups out of memory
+
+A store holds every series it was written to until something removes it. When the series of one label value (a
+group: one user's series) are not wanted for a while, `MemoryCounterStore` can take them out and put them back:
+
+- `seriesOf(label, value)`: the group's series, through the label index.
+- `exportGroup(label, value, grains)`: the group's buckets of those grains, with each series' version.
+- `removeGroup(export)`: removes the group only if it is still exactly that export (no series written since, none
+  added), so nothing written meanwhile is lost.
+- `restore(members, writtenAtMs)`: adds the buckets back. Sums, so writes made while the group was out stay.
+- `remove(series)`: removes given series, whatever they hold.
+
+`cold.ColdGroups` builds the eviction on these, with no dependency: groups neither written nor read for `coldAfter`
+go to a `cold.ColdStore` the application implements (one row per group, `cold.GroupCodec` bytes), a mark stays until
+the group is back or `keepFor` has passed.
+
+```java
+ColdGroups cold = ColdGroups.builder(myRows, () -> memory, "user")
+        .coldAfter(Duration.ofDays(7)).keepFor(Duration.ofDays(33))
+        .grains(EnumSet.of(Grain.MINUTE, Grain.DAY))   // what the rows keep; the rest goes with the series
+        .build();
+
+cold.written(user);                       // after a write of the user's series
+cold.read(user);                          // a read: a user held stays held
+cold.ensureLoaded(user);                  // before a read, outside every lock: a cold user is added back
+long n = cold.reading(() -> query(user)); // the read itself: no eviction removes series in the middle of it
+cold.evict(10_000);                       // now and then, from the thread that writes
+```
+
+A write to a cold group is counted at once and its row added in the background. The store's exceptions reach the
+caller of `ensureLoaded` and make the background loads and the evictions try again later. `writeState` / `readState`
+keep the activity and the marks next to a snapshot; `initFrom` takes each group as active at its newest bucket when a
+store comes without them. Several processes may share one `ColdStore`: a row is replaced only by a later eviction,
+and a row of a later absence than a process's own mark is counted as a conflict.
 
 ## The PromQL subset
 
