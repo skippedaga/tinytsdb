@@ -232,12 +232,20 @@ cold.read(user);                          // a read: a user held stays held
 cold.ensureLoaded(user);                  // before a read, outside every lock: a cold user is added back
 long n = cold.reading(() -> query(user)); // the read itself: no eviction removes series in the middle of it
 cold.evict(10_000);                       // now and then, from the thread that writes
+
+// or both steps at once, never waiting for a pause: row = null for a user held, else the cold row to add
+long m = cold.readGroup(user, row -> query(user) + (row == null ? 0 : sum(row)));
+
+cold.pauseLoads();                        // around a long read of the whole store, such as its snapshot
+try { memory.writeSnapshot(out); } finally { cold.resumeLoads(); }
 ```
 
 A write to a cold group is counted at once and its row added in the background. The store's exceptions reach the
 caller of `ensureLoaded` and make the background loads and the evictions try again later. `writeState` / `readState`
 keep the activity and the marks next to a snapshot; `initFrom` takes each group as active at its newest bucket when a
-store comes without them. Several processes may share one `ColdStore`: a row is replaced only by a later eviction,
+store comes without them. A load needs the store's write lock, and one waiting behind a long read (a snapshot) would
+hold back every read queued after it: `pauseLoads` makes the loads wait on their own, and `readGroup` answers a cold
+user meanwhile from memory plus its row, without loading it. Several processes may share one `ColdStore`: a row is replaced only by a later eviction,
 and a row of a later absence than a process's own mark is counted as a conflict.
 
 ## The PromQL subset

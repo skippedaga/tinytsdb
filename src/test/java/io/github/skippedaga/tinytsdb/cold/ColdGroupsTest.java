@@ -546,4 +546,153 @@ class ColdGroupsTest {
         assertThat(got).isEqualTo(want);
         assertThat(back.series()).allMatch(m -> m.version() == 0);
     }
+
+    /** Day buckets of SUCCESS in a cold row handed to a read (0 for none). */
+    static long rowDays(SeriesGroup row) {
+        if (row == null) {
+            return 0;
+        }
+        long sum = 0;
+        for (SeriesGroup.Member m : row.series()) {
+            if (m.labels().get("status").equals("SUCCESS")) {
+                for (BucketWrite b : m.buckets()) {
+                    if (b.grain() == Grain.DAY) {
+                        sum += b.delta().net();
+                    }
+                }
+            }
+        }
+        return sum;
+    }
+
+    /** A cold group "1" with 3 SUCCESS in its row, and a group "2" held. */
+    private ColdGroups oneColdOneHeld() {
+        ColdGroups cold = cold();
+        write(cold, "1", "SUCCESS", 3);
+        write(cold, "2", "SUCCESS", 1);
+        clock.now += 6 * DAY;
+        write(cold, "2", "SUCCESS", 1);
+        clock.now += DAY + HOUR;
+        assertThat(cold.evict()).isEqualTo(1);
+        assertThat(cold.isCold("1")).isTrue();
+        return cold;
+    }
+
+    @Test
+    void whileLoadsArePausedALoadWaitsAndHoldsBackNoRead() throws Exception {
+        ColdGroups cold = oneColdOneHeld();
+        CountDownLatch holding = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+        try {
+            // a snapshot: loads paused, then the memory store's read lock held for a long read
+            Future<?> snapshot = pool.submit(() -> {
+                cold.pauseLoads();
+                try {
+                    AtomicBoolean first = new AtomicBoolean(true);
+                    memory.export(new io.github.skippedaga.tinytsdb.StoreSink() {
+                        @Override
+                        public void bucket(Labels s, Grain grain, long start, Parts parts) {
+                            if (first.getAndSet(false)) {
+                                holding.countDown();
+                                try {
+                                    release.await(20, TimeUnit.SECONDS);
+                                } catch (InterruptedException e) {
+                                    Thread.currentThread().interrupt();
+                                }
+                            }
+                        }
+
+                        @Override
+                        public void firstAdded(Labels s, long at) {
+                        }
+
+                        @Override
+                        public void claim(String key, long expiresAtMs) {
+                        }
+                    });
+                } finally {
+                    cold.resumeLoads();
+                }
+                return null;
+            });
+            assertThat(holding.await(10, TimeUnit.SECONDS)).isTrue();
+
+            // the cold group is written to (its report was counted before the snapshot began): the loader is asked for
+            // its row and waits for the pause
+            cold.written("1");
+            sleep(300);
+            assertThat(cold.isCold("1")).isTrue();
+
+            // reads go on: a held group at once, the cold one from memory + its row, exactly, still cold after
+            long t = System.nanoTime();
+            assertThat(cold.<Long>readGroup("2", row -> rowDays(row) + days(memory, "2", "SUCCESS"))).isEqualTo(2);
+            assertThat(cold.<Long>readGroup("1", row -> rowDays(row) + days(memory, "1", "SUCCESS"))).isEqualTo(3);
+            assertThat(Duration.ofNanos(System.nanoTime() - t)).isLessThan(Duration.ofSeconds(2));
+            assertThat(cold.isCold("1")).isTrue();
+            assertThat(snapshot.isDone()).isFalse();
+
+            release.countDown();
+            snapshot.get(10, TimeUnit.SECONDS);
+            // the loader goes on once the pause is over: the row is added once
+            waitUntil(10, () -> !cold.isCold("1"));
+            assertThat(days(memory, "1", "SUCCESS")).isEqualTo(3);
+            assertThat(cold.<Long>readGroup("1", row -> {
+                assertThat(row).isNull();
+                return days(memory, "1", "SUCCESS");
+            })).isEqualTo(3);
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void aReadAcrossTheEndOfAPauseCountsTheRowOnce() throws Exception {
+        for (int round = 0; round < 30; round++) {
+            MemoryCounterStore mem = new MemoryCounterStore();
+            MemoryColdStore rows = new MemoryColdStore();
+            ColdGroups cold = cold(mem, rows);
+            write(mem, cold, "1", "SUCCESS", clock.millis(), 3);
+            write(mem, cold, "2", "SUCCESS", clock.millis(), 1);
+            clock.now += 7 * DAY + HOUR;
+            write(mem, cold, "2", "SUCCESS", clock.millis(), 1);
+            assertThat(cold.evict()).isEqualTo(1);
+            write(mem, cold, "1", "SUCCESS", clock.millis(), 1); // the loader wants it now
+
+            ExecutorService pool = Executors.newFixedThreadPool(4);
+            try {
+                CountDownLatch paused = new CountDownLatch(1);
+                Future<?> pauser = pool.submit(() -> {
+                    cold.pauseLoads();
+                    paused.countDown();
+                    sleep(20);
+                    cold.resumeLoads();
+                    return null;
+                });
+                assertThat(paused.await(10, TimeUnit.SECONDS)).isTrue();
+                List<Future<Long>> reads = new ArrayList<>();
+                for (int r = 0; r < 3; r++) {
+                    reads.add(pool.submit(() -> {
+                        long worst = 4;
+                        for (int i = 0; i < 200; i++) {
+                            long v = cold.<Long>readGroup("1", row -> rowDays(row) + days(mem, "1", "SUCCESS"));
+                            if (v != 4) {
+                                worst = v;
+                            }
+                        }
+                        return worst;
+                    }));
+                }
+                pauser.get(10, TimeUnit.SECONDS);
+                for (Future<Long> f : reads) {
+                    assertThat(f.get(10, TimeUnit.SECONDS)).as("round " + round).isEqualTo(4);
+                }
+                waitUntil(10, () -> !cold.isCold("1"));
+                assertThat(days(mem, "1", "SUCCESS")).isEqualTo(4);
+            } finally {
+                pool.shutdownNow();
+            }
+        }
+    }
 }
