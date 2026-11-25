@@ -25,6 +25,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 /**
@@ -71,6 +72,8 @@ public final class ColdGroups implements AutoCloseable {
     private final ConcurrentHashMap<String, Mark> marks = new ConcurrentHashMap<>();
     /** Write: an eviction's removal and mark; read: a load's write and a read of the counters. */
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
+    /** Loads hold it shared; {@link #pauseLoads} holds it exclusive. */
+    private final ReentrantReadWriteLock loadGate = new ReentrantReadWriteLock();
     private final LinkedBlockingQueue<String> toLoad = new LinkedBlockingQueue<>();
     private final Set<String> queued = ConcurrentHashMap.newKeySet();
 
@@ -253,14 +256,81 @@ public final class ColdGroups implements AutoCloseable {
         if (m == null) {
             return;
         }
-        ColdStore.Row row;
+        ColdStore.Row row = readRow(group);
+        loadUnpaused(group, m, row);
+    }
+
+    private ColdStore.Row readRow(String group) {
         try {
-            row = store.readMany(List.of(group)).get(group);
+            return store.readMany(List.of(group)).get(group);
         } catch (RuntimeException e) {
             loadFailures.incrementAndGet();
             throw e;
         }
-        load(group, m, row);
+    }
+
+    /**
+     * Runs a read of one group, cold or not, without waiting for a pause ({@link #pauseLoads}): a group held is read as
+     * it is ({@code reader} gets null); a cold group is loaded first, or, while loads are paused, left cold and
+     * {@code reader} gets its row's series to add to what memory holds (an empty group when it has no row). Either way
+     * the read runs under {@link #reading}, and a row handed over is never in memory at the same time.
+     *
+     * @throws RuntimeException the store's, when a cold group's row cannot be read
+     */
+    public <T> T readGroup(String group, Function<SeriesGroup, T> reader) {
+        while (true) {
+            Mark m = marks.get(group);
+            if (m == null) {
+                return reading(() -> reader.apply(null));
+            }
+            ColdStore.Row row = readRow(group);
+            if (loadGate.readLock().tryLock()) {
+                try {
+                    load(group, m, row);
+                } finally {
+                    loadGate.readLock().unlock();
+                }
+                continue; // loaded (or loaded meanwhile by another thread): read it as held
+            }
+            SeriesGroup cold = row == null ? new SeriesGroup(label, group, List.of())
+                    : GroupCodec.decode(label, group, row.data());
+            Object out = reading(() -> {
+                synchronized (m) {
+                    // the mark guards the row: a load of it waits for this read, and one done before is seen here
+                    return m.loaded ? RETRY : reader.apply(cold);
+                }
+            });
+            if (out != RETRY) {
+                @SuppressWarnings("unchecked")
+                T t = (T) out;
+                return t;
+            }
+        }
+    }
+
+    private static final Object RETRY = new Object();
+
+    /**
+     * Holds back every load of a row into memory until {@link #resumeLoads}, from the same thread; waits for the loads
+     * running. For a long read of the whole memory store (a snapshot): a load waiting for the store's write lock would
+     * hold back every read queued behind it. Reads of cold groups go on through {@link #readGroup}; the loader waits.
+     */
+    public void pauseLoads() {
+        loadGate.writeLock().lock();
+    }
+
+    public void resumeLoads() {
+        loadGate.writeLock().unlock();
+    }
+
+    /** {@link #load}, waiting while loads are paused. */
+    private void loadUnpaused(String group, Mark m, ColdStore.Row row) {
+        loadGate.readLock().lock();
+        try {
+            load(group, m, row);
+        } finally {
+            loadGate.readLock().unlock();
+        }
     }
 
     /** Adds the row read for a mark to memory, once; under the read lock, then the mark's. */
@@ -311,7 +381,7 @@ public final class ColdGroups implements AutoCloseable {
                     queued.remove(g);
                     Mark m = marks.get(g);
                     if (m != null) {
-                        load(g, m, rows.get(g));
+                        loadUnpaused(g, m, rows.get(g));
                     }
                 }
                 backoff = 500;
