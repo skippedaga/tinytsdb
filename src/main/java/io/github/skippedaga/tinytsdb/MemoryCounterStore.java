@@ -347,6 +347,132 @@ public final class MemoryCounterStore implements RangeStore, IndexedStore, Maint
         }
     }
 
+    /** The series that carry {@code label=value}, through the label index. */
+    public List<Labels> seriesOf(String label, String value) {
+        lock.readLock().lock();
+        try {
+            Map<String, Postings> byValue = postings.get(label);
+            Postings p = byValue == null ? null : byValue.get(value);
+            if (p == null) {
+                return List.of();
+            }
+            List<Labels> out = new ArrayList<>(p.series.size());
+            for (SeriesData d : p.series) {
+                out.add(d.labels);
+            }
+            return out;
+        } finally {
+            lock.readLock().unlock();
+        }
+    }
+
+    /**
+     * Removes these series, whatever they hold (all-time buckets included); unknown ones are ignored.
+     *
+     * @return how many were removed
+     */
+    public int remove(Collection<Labels> labels) {
+        lock.writeLock().lock();
+        try {
+            int removed = 0;
+            for (Labels l : labels) {
+                SeriesData d = series.remove(l);
+                if (d != null) {
+                    unindex(d);
+                    removed++;
+                }
+            }
+            return removed;
+        } finally {
+            lock.writeLock().unlock();
+        }
+    }
+
+    /**
+     * The series of {@code label=value} with their buckets of {@code grains}, at one instant (under the read lock).
+     * For {@link #removeGroup} after the buckets are kept elsewhere, and {@link #restore} to add them back.
+     */
+    public SeriesGroup exportGroup(String label, String value, Set<Grain> grains) {
+        lock.readLock().lock();
+        try {
+            Map<String, Postings> byValue = postings.get(label);
+            Postings p = byValue == null ? null : byValue.get(value);
+            if (p == null) {
+                return new SeriesGroup(label, value, List.of());
+            }
+            List<SeriesGroup.Member> out = new ArrayList<>(p.series.size());
+            for (SeriesData d : p.series) {
+                List<BucketWrite> buckets = new ArrayList<>();
+                for (Map.Entry<Grain, BucketArray> e : d.grains.entrySet()) {
+                    if (!grains.contains(e.getKey())) {
+                        continue;
+                    }
+                    BucketArray a = e.getValue();
+                    for (int i = 0; i < a.size; i++) {
+                        Parts parts = new Parts(a.added[i], a.retracted(i));
+                        if (!parts.isZero()) {
+                            buckets.add(new BucketWrite(e.getKey(), a.start[i], parts));
+                        }
+                    }
+                }
+                out.add(new SeriesGroup.Member(d.labels, d.firstAdded, d.version, buckets));
+            }
+            return new SeriesGroup(label, value, out);
+        } finally {
+            lock.readLock().unlock();
+        }
+    }
+
+    /**
+     * Removes the group's series if it is still {@code exported}: the same series, none written since (same
+     * versions), none added. Otherwise nothing is removed: what was written since would be lost with them.
+     *
+     * @return whether the group was removed
+     */
+    public boolean removeGroup(SeriesGroup exported) {
+        lock.writeLock().lock();
+        try {
+            Map<String, Postings> byValue = postings.get(exported.label());
+            Postings p = byValue == null ? null : byValue.get(exported.value());
+            int held = p == null ? 0 : p.series.size();
+            if (held != exported.series().size()) {
+                return false;
+            }
+            List<SeriesData> remove = new ArrayList<>(held);
+            for (SeriesGroup.Member m : exported.series()) {
+                SeriesData d = series.get(m.labels());
+                if (d == null || d.version != m.version()) {
+                    return false;
+                }
+                remove.add(d);
+            }
+            for (SeriesData d : remove) {
+                series.remove(d.labels);
+                unindex(d);
+            }
+            return true;
+        } finally {
+            lock.writeLock().unlock();
+        }
+    }
+
+    /**
+     * Adds the buckets of {@code members} (exported before) to what is held: sums, so whatever was written to the
+     * same series meanwhile stays and is added to. Series not held are created.
+     *
+     * @param writtenAtMs the series' last write time from now on (for {@link #removeIdle})
+     * @return how many series were written
+     */
+    public int restore(Collection<SeriesGroup.Member> members, long writtenAtMs) {
+        List<SeriesBatch> batch = new ArrayList<>(members.size());
+        for (SeriesGroup.Member m : members) {
+            if (!m.buckets().isEmpty()) {
+                batch.add(new SeriesBatch(m.labels(), m.buckets(), m.firstAddedMs(), writtenAtMs, null));
+            }
+        }
+        return batch.isEmpty() ? 0 : apply(new Batch(batch, null, 0)).applied();
+    }
+
     @Override
     public void export(StoreSink sink) {
         lock.readLock().lock();
